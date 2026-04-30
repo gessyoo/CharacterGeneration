@@ -18,7 +18,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
-OLLAMA_MODEL = "gemma4:e4b"
+OLLAMA_MODEL = "Gemma4E4B"
 OLLAMA_HOST = "http://localhost:11434"
 
 
@@ -68,12 +68,8 @@ def get_major_character_names(book_title: str) -> list[str]:
             f"Return ONLY the comma-separated list of names, no other text.\n\n"
             f"Article text:\n{content[:15000]}"
         )
-        response = client.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            options={"temperature": 0.3, "num_predict": 200},
-        )
-        text_response = response.response
+        response = client.generate(model=OLLAMA_MODEL, prompt=prompt)
+        text_response = response["response"]
         major_characters = [n.strip() for n in text_response.split(",") if n.strip()]
         return major_characters
 
@@ -155,14 +151,10 @@ def get_scenario_summaries(vectorstore, character_name: str) -> list[dict]:
         prompt = (
             f"In one short sentence (max 12 words), describe what is happening in this scene "
             f"involving {character_name}. Return ONLY the sentence, nothing else.\n\n"
-            f"Scene:\n{ctx[:6000]}"
+            f"Scene:\n{ctx[:2000]}"
         )
-        resp = client.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            options={"temperature": 0.3, "num_predict": 60},
-        )
-        label = resp.response.strip().strip('"').strip("'")
+        resp = client.generate(model=OLLAMA_MODEL, prompt=prompt)
+        label = resp["response"].strip().strip('"').strip("'")
         summaries.append({"label": label, "context": ctx})
     return summaries
 
@@ -181,13 +173,9 @@ def analyze_character(book_text: str, character_name: str) -> str:
 - Personality traits and mannerisms
 
 Book excerpt:
-{book_text[:12000]}"""
-    response = client.generate(
-        model=OLLAMA_MODEL,
-        prompt=prompt,
-        options={"temperature": 0.4, "num_predict": 600, "repeat_penalty": 1.1},
-    )
-    return response.response
+{book_text[:5000]}"""
+    response = client.generate(model=OLLAMA_MODEL, prompt=prompt)
+    return response["response"]
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +183,8 @@ Book excerpt:
 # ---------------------------------------------------------------------------
 
 def cast_character_with_actor(
-    character_name: str,
-    character_description: str,
+    character_name: str, 
+    character_description: str, 
     industry: str = "hollywood",
     genre: str = "",
     decade: str = "2026"
@@ -216,12 +204,8 @@ Cast an age-appropriate real-world actor from the {industry} industry to play th
 If the decade is in the past, pick an actor who was active and the correct age DURING that decade.
 If the decade is modern, pick a currently active actor.
 Return ONLY the name of the actor, nothing else."""
-    response = client.generate(
-        model=OLLAMA_MODEL,
-        prompt=prompt,
-        options={"temperature": 0.3, "num_predict": 20},
-    )
-    return response.response.strip()
+    response = client.generate(model=OLLAMA_MODEL, prompt=prompt)
+    return response["response"].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -242,97 +226,59 @@ def generate_prompt_for_scenario(
     """
     Build a Z-Image-Turbo / Stable Diffusion prompt for one character scene.
     Uses the (possibly user-edited) description and actor name.
-    Two-shot approach: draft → critique/refine for richer output.
     """
     client = get_ollama_client()
 
-    # Build override block
+    # Create override block
     overrides = []
     if gender: overrides.append(f"Gender: {gender}")
-    if race:   overrides.append(f"Race/Ethnicity: {race}")
-    if age:    overrides.append(f"Age: {age}")
+    if race: overrides.append(f"Race/Ethnicity: {race}")
+    if age: overrides.append(f"Age: {age}")
     override_text = "\n".join(overrides)
 
-    # Extract scene-specific details with genre adaptation
-    genre_label = genre if genre else "realistic"
-    decade_instruction = (
-        f"Visual Style: {decade}s cinematography and fashion"
-        if decade and decade != "2026"
-        else "Visual Style: Modern cinematic hyper-realistic"
-    )
-
+    # Extract scene-specific details with genre adaptation for visuals
+    genre_context = f" (Adapted specifically for the {genre} genre)" if genre else ""
     extract_prompt = (
-        f"Given this book scene (adapted for the {genre_label} genre), identify the location "
-        f"and what {character_name} is doing.\n"
-        f"Then describe {character_name}'s CLOTHING and HAIRSTYLE as they would appear in a "
-        f"{genre_label} adaptation.\n"
-        f"IMPORTANT: Clothing and hair must reflect the {genre_label} genre, but facial features, "
-        f"age, and ethnicity must remain consistent with a realistic human portrayal.\n\n"
-        f"Scene: {scenario_context[:6000]}"
+        f"Given this book scene{genre_context}, identify the location and what {character_name} is doing.\n"
+        f"Then, describe {character_name}'s CLOTHING and HAIRSTYLE as they would appear in a {genre if genre else 'realistic'} adaptation.\n"
+        f"IMPORTANT: The clothing and hair must reflect the {genre} genre, but the facial features, age, and ethnicity must remain consistent with a realistic human portrayal of the character.\n\n"
+        f"Scene: {scenario_context}"
     )
-    scene_resp = client.generate(
-        model=OLLAMA_MODEL,
-        prompt=extract_prompt,
-        options={"temperature": 0.5, "num_predict": 400, "repeat_penalty": 1.1},
-    )
-    scene_details = scene_resp.response
+    scene_resp = client.generate(model=OLLAMA_MODEL, prompt=extract_prompt)
+    scene_details = scene_resp["response"]
 
     actor_instruction = (
-        f"Resembles actor: {actor_name}." if actor_name else ""
+        f"The character's face should closely resemble the actor: {actor_name}."
+        if actor_name
+        else ""
     )
 
-    # --- Draft prompt (tag/comma style tuned for Z-Image-Turbo) ---
-    draft_template = f"""You are an expert at writing Stable Diffusion / Z-Image-Turbo image prompts.
+    genre_instruction = f"Genre: {genre}" if genre else ""
+    decade_instruction = f"Visual Style: {decade}s cinematography and fashion" if decade and decade != "2026" else "Visual Style: Modern cinematic hyper-realistic"
 
-Given the character and scene below, output a single rich image prompt in this EXACT comma-separated format:
-[subject], [physical description], [clothing], [action/pose], [setting], [lighting], [mood], [camera angle], [style tags]
+    prompt_template = f"""Create a highly detailed image prompt for Z-Image-Turbo.
 
 Character: {character_name}
-Base Description: {description}
-{actor_instruction}
-Genre: {genre_label}
+{genre_instruction}
 {decade_instruction}
-Scene Details: {scene_details}
-{f"Overrides — {override_text}" if override_text else ""}
+{actor_instruction}
+
+Core Identity (MUST REMAIN TRUE):
+- Physical Overrides: {override_text if override_text else "None"}
+- Base Description: {description}
+
+Visual Adaptation (CLOTHING, HAIR, ENVIRONMENT):
+- Genre Adaptation: The character's CLOTHING and HAIRSTYLE must be fully modified to fit the '{genre}' genre.
+- Environment: The background and visuals must reflect the '{genre}' style.
+- Scene Context: {scene_details}
 
 Rules:
-- Comma-separated tags only, no prose sentences
-- Be highly specific about lighting (e.g. "golden hour backlight", "dim candlelight", "cool moonlight")
-- Include camera angle (e.g. "medium close-up", "low angle shot", "over-the-shoulder")
-- Be specific about fabric textures and clothing details
-- Include atmospheric background depth
-- End with: photorealistic, cinematic, 8k, sharp focus, volumetric lighting
-- STRICTLY MAINTAIN: age, ethnicity, and facial structure from the base description
-- FULLY ADAPT: clothing, hair, lighting, and environment to match the {genre_label} genre
-- Never use character names, book titles, or studio names
+- STRICTLY MAINTAIN: expression, age, ethnicity, and facial structure from the core identity.
+- FULLY CHANGE: clothing, hair, and lighting/visual effects to match the {genre} genre.
+- Style: Photorealistic, cinematic, high detail 8k.
+- Atmosphere: Vivid and atmospheric based on the scene context.
 
-Output ONLY the prompt, no explanation."""
+Return ONLY the image prompt text, nothing else."""
 
-    draft_resp = client.generate(
-        model=OLLAMA_MODEL,
-        prompt=draft_template,
-        options={"temperature": 0.75, "num_predict": 600, "top_p": 0.92, "repeat_penalty": 1.1},
-    )
-    draft = draft_resp.response.strip()
-
-    # --- Refinement pass: critique and enrich the draft ---
-    refine_prompt = f"""You are a Z-Image-Turbo prompt expert. Improve this image prompt by making it more visually specific and evocative.
-
-DRAFT PROMPT:
-{draft}
-
-Strengthen it by ensuring it includes:
-- Exact fabric textures and fine clothing details (e.g. "weathered linen shirt", "embroidered silk collar")
-- Specific lighting direction and colour temperature (e.g. "warm amber sidelight from left", "cold blue overcast")
-- Background depth with foreground/midground/background elements
-- Character's precise expression and body language
-- Any environmental atmosphere (dust motes, mist, rain, shadow play)
-
-Return ONLY the improved comma-separated prompt, no prose, no explanation."""
-
-    refined_resp = client.generate(
-        model=OLLAMA_MODEL,
-        prompt=refine_prompt,
-        options={"temperature": 0.6, "num_predict": 700, "top_p": 0.92, "repeat_penalty": 1.1},
-    )
-    return refined_resp.response.strip()
+    response = client.generate(model=OLLAMA_MODEL, prompt=prompt_template)
+    return response["response"]
